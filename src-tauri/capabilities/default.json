@@ -1,15 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default OCR Lab desktop permissions.",
-  "windows": ["main", "pipeline-overlay", "image-preview"],
+  "description": "Default capabilities for OCR Lab",
+  "windows": ["main", "virtual-screen", "tool-overlay"],
   "permissions": [
     "core:default",
     "dialog:default",
-    "core:webview:allow-create-webview-window",
-    "core:window:allow-set-position",
-    "core:window:allow-set-size",
-    "core:window:allow-show",
-    "core:window:allow-hide"
+    "dialog:allow-open"
   ]
 }

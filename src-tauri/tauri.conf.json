@@ -2,28 +2,64 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OCR Lab",
   "version": "0.1.0",
-  "identifier": "com.oosthash.ocrlab",
+  "identifier": "com.frameforge.ocr-lab",
   "build": {
-    "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420",
     "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build"
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "OCR Lab",
-        "width": 1120,
+        "label": "main",
+        "title": "OCR Lab — Control Panel",
+        "width": 900,
+        "height": 700,
+        "minWidth": 640,
+        "minHeight": 480,
+        "visible": true,
+        "backgroundColor": "#161b22"
+      },
+      {
+        "label": "virtual-screen",
+        "url": "index.html?virtual-screen",
+        "title": "FrameForge Pipeline Lab - Virtual Game",
+        "width": 1200,
         "height": 800,
-        "minWidth": 720,
-        "minHeight": 560
+        "x": 100,
+        "y": 100,
+        "visible": false,
+        "transparent": false,
+        "decorations": true,
+        "shadow": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "resizable": true
+      },
+      {
+        "label": "tool-overlay",
+        "url": "index.html?tool-overlay",
+        "title": "OCR Lab Tool Overlay",
+        "width": 1200,
+        "height": 250,
+        "x": 100,
+        "y": 650,
+        "visible": false,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     }
-  },
-  "bundle": {
-    "active": false
   }
 }

@@ -3,3 +3,5 @@ dist/
 src-tauri/target/
 images/
 gen/
+pnpm-workspace.yaml
+runs/

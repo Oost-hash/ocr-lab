@@ -4,12 +4,6 @@ pub fn avg_brightness(_pixels: &[u8]) -> u32 { 0 }
 
 pub fn capture_warframe_reward_area() -> Option<(Vec<u8>, u32, u32, u32, String)> { None }
 
-pub fn capture_window_reward_area(
-    _window_title: &str,
-) -> Result<(Vec<u8>, u32, u32, u32, String), String> {
-    Err("Window capture not supported on Linux yet".into())
-}
-
 pub fn capture_warframe_pixels() -> Result<(Vec<u8>, u32, u32), String> {
     Err("Screen capture not supported on Linux yet".into())
 }

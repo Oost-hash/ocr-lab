@@ -6,6 +6,7 @@ const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig(() => ({
   plugins: [react()],
+  publicDir: "src-tauri/src/prod-code/frontend/public",
 
   clearScreen: false,
 

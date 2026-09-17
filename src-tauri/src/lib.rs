@@ -5,17 +5,40 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use tauri::Emitter;
 
 static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(serde::Deserialize)]
 struct OcrLabConfig {
     paths: OcrLabPaths,
+    #[serde(default)]
+    warframe: WarframeConfig,
 }
 
 #[derive(serde::Deserialize)]
 struct OcrLabPaths {
     runs: PathBuf,
+}
+
+#[derive(serde::Deserialize)]
+struct WarframeConfig {
+    ee_log: Option<PathBuf>,
+    #[serde(default = "default_trigger_delay_ms")]
+    trigger_delay_ms: u64,
+}
+
+impl Default for WarframeConfig {
+    fn default() -> Self {
+        Self {
+            ee_log: None,
+            trigger_delay_ms: default_trigger_delay_ms(),
+        }
+    }
+}
+
+fn default_trigger_delay_ms() -> u64 {
+    500
 }
 
 fn runs_dir() -> Result<PathBuf, String> {
@@ -35,9 +58,54 @@ fn runs_dir() -> Result<PathBuf, String> {
     })
 }
 
+fn warframe_config() -> Result<(PathBuf, u64), String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| "OCR Lab root directory not found".to_string())?;
+    let config_path = root.join("ocr-lab.toml");
+    let config_text = std::fs::read_to_string(&config_path)
+        .map_err(|error| format!("Read {}: {error}", config_path.display()))?;
+    let config: OcrLabConfig = toml::from_str(&config_text)
+        .map_err(|error| format!("Parse {}: {error}", config_path.display()))?;
+    let default_log = dirs::data_local_dir()
+        .ok_or_else(|| "Local application-data directory not found".to_string())?
+        .join("Warframe")
+        .join("EE.log");
+    let log_path = config.warframe.ee_log.unwrap_or(default_log);
+
+    Ok((
+        if log_path.is_absolute() { log_path } else { root.join(log_path) },
+        config.warframe.trigger_delay_ms,
+    ))
+}
+
 // ─── Modules ──────────────────────────────────────────────────────────────────
 
+#[path = "prod-code/ocr/mod.rs"]
 mod ocr;
+#[path = "prod-code/ocr_fallback.rs"]
+mod ocr_fallback;
+#[path = "lab/ocr.rs"]
+mod lab_ocr;
+#[path = "lab/live.rs"]
+mod live;
+#[path = "lab/app_state.rs"]
+mod app_state;
+#[path = "lab/production_modules.rs"]
+mod production_modules;
+use production_modules::{catalogue, diagnostics, inventory_state, log_watcher, memory_scanner, monitor, relic_pick, wfcd, worldstate};
+#[path = "prod-code/platform/mod.rs"]
+mod platform;
+#[path = "prod-code/reward_watcher.rs"]
+mod reward_watcher;
+include!(concat!(env!("OUT_DIR"), "/utilities.rs"));
+
+pub(crate) fn append_to_file(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    live::observe_diagnostic(path, text);
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    file.write_all(text.as_bytes())
+}
 
 // ─── Structs ──────────────────────────────────────────────────────────────────
 
@@ -54,13 +122,7 @@ pub struct OcrParams<'a> {
 
 // ─── RelicReward type ─────────────────────────────────────────────────────────
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct RelicReward {
-    pub unique_name: String,
-    pub name: String,
-    pub rarity: String,
-    pub image_name: Option<String>,
-}
+pub use wfcd::RelicReward;
 
 #[derive(serde::Serialize)]
 struct PipelineStage {
@@ -140,7 +202,7 @@ fn run_pipeline_from_bgra(
     };
     record_stage(&mut stages, "catalog_load", catalog_load_started);
 
-    let extraction = ocr::extract_reward_items_timed(OcrParams {
+    let extraction = lab_ocr::extract_reward_items_timed(OcrParams {
         pixels: &frame,
         pix_w: fw,
         pix_h: fh,
@@ -162,6 +224,7 @@ fn run_pipeline_from_bgra(
             RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         ),
         "source_kind": source_kind,
+        "execution_kind": "lab_instrumented_production_ocr",
         "source_dimensions": { "width": width, "height": height },
         "preprocess": preprocess,
         "is_complete": extraction.is_complete,
@@ -229,7 +292,7 @@ async fn recognize_virtual_game(preprocess: bool) -> Result<String, String> {
         for attempt in 1..=MAX_ATTEMPTS {
             let attempt_started = std::time::Instant::now();
             let capture_started = std::time::Instant::now();
-            let capture = ocr::capture_window_reward_area(VIRTUAL_GAME_TITLE);
+            let capture = lab_ocr::capture_window_reward_area(VIRTUAL_GAME_TITLE);
             let result = match capture {
                 Ok((pixels, width, capture_height, _full_height, capture_info)) => {
                     let mut stages = Vec::new();
@@ -326,6 +389,45 @@ async fn recognize_virtual_game(preprocess: bool) -> Result<String, String> {
     })
     .await
     .map_err(|error| format!("Virtual Game capture task failed: {error}"))?
+}
+
+pub(crate) fn recognize_warframe_attempt(
+    catalog: &[(String, String)],
+    hint_squad_size: Option<usize>,
+    player_names: &[String],
+) -> Result<serde_json::Value, String> {
+    let started = std::time::Instant::now();
+    let capture_started = std::time::Instant::now();
+    let (pixels, width, capture_height, game_height, capture_info) = ocr::capture_warframe_reward_area()
+        .ok_or_else(|| "Warframe window not found or capture failed".to_string())?;
+    let mut stages = Vec::new();
+    record_stage(&mut stages, "window_capture", capture_started);
+    let extraction = lab_ocr::extract_reward_items_timed(OcrParams {
+        pixels: &pixels,
+        pix_w: width,
+        pix_h: capture_height,
+        game_h: game_height,
+        catalog,
+        capture_info: &capture_info,
+        hint_squad_size,
+        player_names,
+    });
+    stages.push(PipelineStage { name: "bmp_encode", elapsed_ms: extraction.bmp_encode_ms });
+    stages.push(PipelineStage { name: "ocr", elapsed_ms: extraction.ocr_ms });
+    stages.push(PipelineStage { name: "match", elapsed_ms: extraction.match_ms });
+    Ok(serde_json::json!({
+        "source_kind": "warframe_capture",
+        "execution_kind": "lab_instrumented_production_ocr",
+        "source_dimensions": { "width": width, "height": capture_height, "game_height": game_height },
+        "preprocess": false,
+        "is_complete": extraction.is_complete,
+        "skip": extraction.skip,
+        "items": extraction.items,
+        "positions": extraction.positions,
+        "debug": extraction.debug,
+        "stages": stages,
+        "total_ms": started.elapsed().as_millis(),
+    }))
 }
 
 #[tauri::command]
@@ -447,9 +549,36 @@ fn delete_screenshot_record(id: String) -> Result<(), String> {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 pub fn run() {
+    let live_root = live::initialize_environment().expect("initialize lab run directory");
     tauri::Builder::default()
+        .manage(app_state::AppState {
+            changes_log_path: live_root.join("inventory-changes.log"),
+            corrections: app_state::load_corrections(&dirs::config_dir().unwrap_or_default().join("frameforge/corrections.json")),
+            ..Default::default()
+        })
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![
+        .setup(|app| {
+            if let Some(directory) = dirs::data_local_dir() {
+                ocr_fallback::set_data_dir(directory.join("frameforge"));
+            }
+            live::setup(app.handle())?;
+            Ok(())
+        })
+        .invoke_handler(|invoke| {
+            use tauri::Manager;
+            let command = invoke.message.command();
+            if command == "show_overlay_window"
+                && !invoke.message.webview().state::<app_state::AppState>().monitor_active.load(Ordering::SeqCst)
+            {
+                invoke.resolver.reject("Live run is not active");
+                return true;
+            }
+            if matches!(command, "show_overlay_window" | "move_overlay_offscreen" | "get_items_by_paths"
+                | "get_current_quantities" | "get_current_crafting" | "get_recipe" | "get_pending_relic_rewards")
+            {
+                live::record("production_ipc_received", serde_json::json!({"command": command}));
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             recognize_from_file,
             recognize_virtual_game,
             show_virtual_game_window,
@@ -458,7 +587,25 @@ pub fn run() {
             save_screenshot_record,
             load_screenshot_history,
             delete_screenshot_record,
-        ])
+            live::start_live_production,
+            live::stop_live_production,
+            live::get_live_snapshot,
+            live::record_lab_frontend,
+            live::test_live_relic_picker,
+            diagnostics::log_relic_fe,
+            relic_pick::show_overlay_window,
+            relic_pick::move_overlay_offscreen,
+            relic_pick::get_pending_relic_rewards,
+            diagnostics::get_warframe_window_rect,
+            diagnostics::set_overlay_topmost,
+            catalogue::get_items_by_paths,
+            catalogue::get_recipe,
+            catalogue::get_current_crafting,
+            live::get_current_quantities,
+            live::get_item_price,
+            ];
+            handler(invoke)
+        })
         .run(tauri::generate_context!())
         .expect("error while running OCR Lab");
 }

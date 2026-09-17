@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "prod:sync": "node sync-prod-code.mjs",
+    "prod:check": "node sync-prod-code.mjs --check",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",

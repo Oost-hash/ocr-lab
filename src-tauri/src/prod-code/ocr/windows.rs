@@ -1,5 +1,3 @@
-#![allow(dead_code, unused_imports)]
-
 //! Windows screen capture + OCR engine for Warframe relic reward detection.
 //!
 //! Capture strategy (automatic, works for all display modes):
@@ -14,9 +12,7 @@
 
 /// Compute average pixel brightness from a BGRA buffer (sampled every 64 pixels).
 pub fn avg_brightness(pixels: &[u8]) -> u32 {
-    let sum: u32 = pixels
-        .chunks_exact(4)
-        .step_by(64)
+    let sum: u32 = pixels.chunks_exact(4).step_by(64)
         .map(|p| (p[0] as u32 + p[1] as u32 + p[2] as u32) / 3)
         .sum();
     sum / (pixels.len() / 4 / 64).max(1) as u32
@@ -31,16 +27,13 @@ pub fn avg_brightness(pixels: &[u8]) -> u32 {
 #[tracing::instrument(level = "info", skip_all)]
 pub fn capture_warframe_reward_area() -> Option<(Vec<u8>, u32, u32, u32, String)> {
     // ── Path A: PrintWindow (Windowed / Borderless Windowed) ──────────────────
-    if let Some((pixels, w, cap_h, full_h)) = capture_printwindow("Warframe") {
+    if let Some((pixels, w, cap_h, full_h)) = capture_printwindow() {
         let avg = avg_brightness(&pixels);
         // Threshold 20: Warframe's dark-themed reward screen gives avg≈40 in Borderless
         // Windowed — that is valid content, not a failed capture. Only values near zero
         // (avg < 20) indicate Fullscreen Exclusive mode where GDI can't reach the DX buffer.
         if avg >= 20 {
-            let info = format!(
-                "PrintWindow  {}×{}px (top 80%, cap {}px)  avg_brightness={}",
-                w, full_h, cap_h, avg
-            );
+            let info = format!("PrintWindow  {}×{}px (top 80%, cap {}px)  avg_brightness={}", w, full_h, cap_h, avg);
             return Some((pixels, w, cap_h, full_h, info));
         }
         // Truly dark PrintWindow — Fullscreen Exclusive or GPU bypassing GDI.
@@ -79,100 +72,61 @@ pub fn capture_warframe_reward_area() -> Option<(Vec<u8>, u32, u32, u32, String)
     None
 }
 
-/// Capture the reward area from a named test source window.
-///
-/// The tool intentionally does not use the desktop-DXGI fallback here: it could
-/// capture pixels from another window and invalidate a reproducible run.
-pub fn capture_window_reward_area(
-    window_title: &str,
-) -> Result<(Vec<u8>, u32, u32, u32, String), String> {
-    let (pixels, width, capture_height, full_height) = capture_printwindow(window_title)
-        .ok_or_else(|| format!("Source window not found or too small: {window_title}"))?;
-    let brightness = avg_brightness(&pixels);
-    let info = format!(
-        "PrintWindow source={window_title:?} {width}x{full_height}px (top 80%, cap {capture_height}px) avg_brightness={brightness}"
-    );
-    Ok((pixels, width, capture_height, full_height, info))
-}
-
 /// GDI PrintWindow capture — works for Windowed and Borderless Windowed.
 #[tracing::instrument(level = "debug", skip_all)]
-fn capture_printwindow(window_title: &str) -> Option<(Vec<u8>, u32, u32, u32)> {
+fn capture_printwindow() -> Option<(Vec<u8>, u32, u32, u32)> {
     use std::mem;
     use windows_sys::Win32::{
         Foundation::RECT,
         Graphics::Gdi::{
-            CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-            ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD,
+            CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+            GetDIBits, GetDC, ReleaseDC, SelectObject,
+            BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD,
         },
         UI::WindowsAndMessaging::{FindWindowW, GetClientRect},
     };
     #[link(name = "user32")]
-    extern "system" {
-        fn PrintWindow(hwnd: isize, hdcblt: isize, nflags: u32) -> i32;
-    }
+    extern "system" { fn PrintWindow(hwnd: isize, hdcblt: isize, nflags: u32) -> i32; }
     const PW_RENDERFULLCONTENT: u32 = 2;
 
     unsafe {
-        let title: Vec<u16> = window_title.encode_utf16().chain(std::iter::once(0)).collect();
+        let title: Vec<u16> = "Warframe\0".encode_utf16().collect();
         let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-        if hwnd == 0 {
-            return None;
-        }
+        if hwnd == 0 { return None; }
 
-        let mut rect = RECT {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
+        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
         GetClientRect(hwnd, &mut rect);
         let full_w = (rect.right - rect.left) as u32;
         let full_h = (rect.bottom - rect.top) as u32;
-        if full_w < 100 || full_h < 100 {
-            return None;
-        }
+        if full_w < 100 || full_h < 100 { return None; }
 
         let cap_h = (full_h as f32 * 0.80) as u32;
 
         let hdc_win = GetDC(hwnd);
         let hdc_mem = CreateCompatibleDC(hdc_win);
-        let hbm = CreateCompatibleBitmap(hdc_win, full_w as i32, full_h as i32);
+        let hbm     = CreateCompatibleBitmap(hdc_win, full_w as i32, full_h as i32);
         let hbm_old = SelectObject(hdc_mem, hbm);
 
         PrintWindow(hwnd, hdc_mem, PW_RENDERFULLCONTENT);
 
         let mut bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
-                biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: full_w as i32,
-                biHeight: -(cap_h as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB,
-                biSizeImage: 0,
+                biSize:          mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth:         full_w as i32,
+                biHeight:        -(cap_h as i32),
+                biPlanes:        1,
+                biBitCount:      32,
+                biCompression:   BI_RGB,
+                biSizeImage:     0,
                 biXPelsPerMeter: 0,
                 biYPelsPerMeter: 0,
-                biClrUsed: 0,
-                biClrImportant: 0,
+                biClrUsed:       0,
+                biClrImportant:  0,
             },
-            bmiColors: [RGBQUAD {
-                rgbBlue: 0,
-                rgbGreen: 0,
-                rgbRed: 0,
-                rgbReserved: 0,
-            }],
+            bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
         };
         let mut pixels = vec![0u8; (full_w * cap_h * 4) as usize];
-        GetDIBits(
-            hdc_mem,
-            hbm,
-            0,
-            cap_h,
-            pixels.as_mut_ptr() as *mut _,
-            &mut bmi,
-            DIB_RGB_COLORS,
-        );
+        GetDIBits(hdc_mem, hbm, 0, cap_h, pixels.as_mut_ptr() as *mut _, &mut bmi, DIB_RGB_COLORS);
 
         SelectObject(hdc_mem, hbm_old);
         DeleteObject(hbm);
@@ -191,40 +145,30 @@ pub fn capture_warframe_pixels() -> Result<(Vec<u8>, u32, u32), String> {
     use windows_sys::Win32::{
         Foundation::RECT,
         Graphics::Gdi::{
-            CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-            ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD,
+            CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+            GetDIBits, GetDC, ReleaseDC, SelectObject,
+            BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD,
         },
         UI::WindowsAndMessaging::{FindWindowW, GetClientRect},
     };
     #[link(name = "user32")]
-    extern "system" {
-        fn PrintWindow(hwnd: isize, hdcblt: isize, nflags: u32) -> i32;
-    }
+    extern "system" { fn PrintWindow(hwnd: isize, hdcblt: isize, nflags: u32) -> i32; }
     const PW_RENDERFULLCONTENT: u32 = 2;
 
     unsafe {
         let title: Vec<u16> = "Warframe\0".encode_utf16().collect();
         let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-        if hwnd == 0 {
-            return Err("Warframe window not found".into());
-        }
+        if hwnd == 0 { return Err("Warframe window not found".into()); }
 
-        let mut rect = RECT {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
+        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
         GetClientRect(hwnd, &mut rect);
-        let full_w = (rect.right - rect.left) as u32;
-        let full_h = (rect.bottom - rect.top) as u32;
-        if full_w < 100 || full_h < 100 {
-            return Err("Window too small".into());
-        }
+        let full_w = (rect.right  - rect.left) as u32;
+        let full_h = (rect.bottom - rect.top)  as u32;
+        if full_w < 100 || full_h < 100 { return Err("Window too small".into()); }
 
         let hdc_win = GetDC(hwnd);
         let hdc_mem = CreateCompatibleDC(hdc_win);
-        let hbm = CreateCompatibleBitmap(hdc_win, full_w as i32, full_h as i32);
+        let hbm     = CreateCompatibleBitmap(hdc_win, full_w as i32, full_h as i32);
         let hbm_old = SelectObject(hdc_mem, hbm);
         PrintWindow(hwnd, hdc_mem, PW_RENDERFULLCONTENT);
 
@@ -233,32 +177,15 @@ pub fn capture_warframe_pixels() -> Result<(Vec<u8>, u32, u32), String> {
                 biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
                 biWidth: full_w as i32,
                 biHeight: -(full_h as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB,
-                biSizeImage: 0,
-                biXPelsPerMeter: 0,
-                biYPelsPerMeter: 0,
-                biClrUsed: 0,
-                biClrImportant: 0,
+                biPlanes: 1, biBitCount: 32, biCompression: BI_RGB,
+                biSizeImage: 0, biXPelsPerMeter: 0, biYPelsPerMeter: 0,
+                biClrUsed: 0, biClrImportant: 0,
             },
-            bmiColors: [RGBQUAD {
-                rgbBlue: 0,
-                rgbGreen: 0,
-                rgbRed: 0,
-                rgbReserved: 0,
-            }],
+            bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
         };
         let mut pixels = vec![0u8; (full_w * full_h * 4) as usize];
-        GetDIBits(
-            hdc_mem,
-            hbm,
-            0,
-            full_h,
-            pixels.as_mut_ptr() as *mut _,
-            &mut bmi,
-            DIB_RGB_COLORS,
-        );
+        GetDIBits(hdc_mem, hbm, 0, full_h,
+                  pixels.as_mut_ptr() as *mut _, &mut bmi, DIB_RGB_COLORS);
         SelectObject(hdc_mem, hbm_old);
         DeleteObject(hbm);
         DeleteDC(hdc_mem);
@@ -270,13 +197,8 @@ pub fn capture_warframe_pixels() -> Result<(Vec<u8>, u32, u32), String> {
 /// OCR a rectangle from a pre-captured pixel buffer. All coordinates are 0.0–1.0 fractions.
 /// Applies a mild contrast stretch before OCR (no upscaling — upscaling distorts numerals).
 pub fn ocr_pixels_rect(
-    pixels: &[u8],
-    full_w: u32,
-    full_h: u32,
-    x_start: f32,
-    x_end: f32,
-    y_start: f32,
-    y_end: f32,
+    pixels: &[u8], full_w: u32, full_h: u32,
+    x_start: f32, x_end: f32, y_start: f32, y_end: f32,
 ) -> Result<String, String> {
     let col_s = (full_w as f32 * x_start.clamp(0.0, 1.0)) as usize;
     let col_e = ((full_w as f32 * x_end.clamp(0.0, 1.0)) as usize).min(full_w as usize);
@@ -284,12 +206,10 @@ pub fn ocr_pixels_rect(
     let row_e = ((full_h as f32 * y_end.clamp(0.0, 1.0)) as usize).min(full_h as usize);
     let rect_w = (col_e - col_s) as u32;
     let rect_h = (row_e - row_s) as u32;
-    if rect_w < 4 || rect_h < 4 {
-        return Err("Region too small".into());
-    }
+    if rect_w < 4 || rect_h < 4 { return Err("Region too small".into()); }
 
-    let src_stride = full_w as usize * 4;
-    let dst_stride = rect_w as usize * 4;
+    let src_stride  = full_w as usize * 4;
+    let dst_stride  = rect_w as usize * 4;
     let mut cropped = vec![0u8; dst_stride * rect_h as usize];
     for row in 0..rect_h as usize {
         let src = (row_s + row) * src_stride + col_s * 4;
@@ -304,13 +224,8 @@ pub fn ocr_pixels_rect(
 
 /// OCR a rectangle WITHOUT preprocessing — for white-on-dark text that OCRs fine raw.
 pub fn ocr_pixels_rect_raw(
-    pixels: &[u8],
-    full_w: u32,
-    full_h: u32,
-    x_start: f32,
-    x_end: f32,
-    y_start: f32,
-    y_end: f32,
+    pixels: &[u8], full_w: u32, full_h: u32,
+    x_start: f32, x_end: f32, y_start: f32, y_end: f32,
 ) -> Result<String, String> {
     let col_s = (full_w as f32 * x_start.clamp(0.0, 1.0)) as usize;
     let col_e = ((full_w as f32 * x_end.clamp(0.0, 1.0)) as usize).min(full_w as usize);
@@ -318,9 +233,7 @@ pub fn ocr_pixels_rect_raw(
     let row_e = ((full_h as f32 * y_end.clamp(0.0, 1.0)) as usize).min(full_h as usize);
     let rect_w = (col_e - col_s) as u32;
     let rect_h = (row_e - row_s) as u32;
-    if rect_w < 4 || rect_h < 4 {
-        return Err("Region too small".into());
-    }
+    if rect_w < 4 || rect_h < 4 { return Err("Region too small".into()); }
     let src_stride = full_w as usize * 4;
     let dst_stride = rect_w as usize * 4;
     let mut cropped = vec![0u8; dst_stride * rect_h as usize];
@@ -342,12 +255,7 @@ pub fn capture_and_ocr_region(y_start: f32, y_end: f32) -> Result<String, String
 
 /// Convenience: capture + OCR a specific rectangle.
 #[allow(dead_code)]
-pub fn capture_rect_and_ocr(
-    x_start: f32,
-    x_end: f32,
-    y_start: f32,
-    y_end: f32,
-) -> Result<String, String> {
+pub fn capture_rect_and_ocr(x_start: f32, x_end: f32, y_start: f32, y_end: f32) -> Result<String, String> {
     let (pixels, w, h) = capture_warframe_pixels()?;
     ocr_pixels_rect(&pixels, w, h, x_start, x_end, y_start, y_end)
 }
@@ -405,88 +313,57 @@ fn capture_screen_gdi_scaled(num: u32, denom: u32) -> Option<(Vec<u8>, u32, u32)
     use windows_sys::Win32::{
         Foundation::RECT,
         Graphics::Gdi::{
-            CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-            ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER,
-            BI_RGB, DIB_RGB_COLORS, HALFTONE, RGBQUAD, SRCCOPY,
+            StretchBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+            GetDC, GetDIBits, ReleaseDC, SelectObject,
+            BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD,
+            SRCCOPY, HALFTONE, SetStretchBltMode,
         },
         UI::WindowsAndMessaging::{FindWindowW, GetWindowRect},
     };
     unsafe {
         let title: Vec<u16> = "Warframe\0".encode_utf16().collect();
         let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-        if hwnd == 0 {
-            return None;
-        }
+        if hwnd == 0 { return None; }
 
-        let mut rect = RECT {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
+        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
         GetWindowRect(hwnd, &mut rect);
-        let src_w = (rect.right - rect.left) as u32;
-        let src_h = (rect.bottom - rect.top) as u32;
-        if src_w < 100 || src_h < 100 {
-            return None;
-        }
+        let src_w = (rect.right  - rect.left) as u32;
+        let src_h = (rect.bottom - rect.top)  as u32;
+        if src_w < 100 || src_h < 100 { return None; }
 
         // Destination size after scale — at least 1 pixel each dimension.
         let dst_w = ((src_w * num) / denom).max(1);
         let dst_h = ((src_h * num) / denom).max(1);
 
         let hdc_screen = GetDC(0);
-        let hdc_mem = CreateCompatibleDC(hdc_screen);
-        let hbm = CreateCompatibleBitmap(hdc_screen, dst_w as i32, dst_h as i32);
-        let hbm_old = SelectObject(hdc_mem, hbm);
+        let hdc_mem    = CreateCompatibleDC(hdc_screen);
+        let hbm        = CreateCompatibleBitmap(hdc_screen, dst_w as i32, dst_h as i32);
+        let hbm_old    = SelectObject(hdc_mem, hbm);
 
         // HALFTONE gives better quality when downscaling.
         SetStretchBltMode(hdc_mem, HALFTONE);
         StretchBlt(
-            hdc_mem,
-            0,
-            0,
-            dst_w as i32,
-            dst_h as i32, // dest
-            hdc_screen,
-            rect.left,
-            rect.top,
-            src_w as i32,
-            src_h as i32, // src
+            hdc_mem,    0, 0, dst_w as i32, dst_h as i32,  // dest
+            hdc_screen, rect.left, rect.top, src_w as i32, src_h as i32, // src
             SRCCOPY,
         );
 
         let mut bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
-                biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: dst_w as i32,
-                biHeight: -(dst_h as i32), // negative = top-down row order
-                biPlanes: 1,
-                biBitCount: 32,
+                biSize:        mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth:       dst_w as i32,
+                biHeight:      -(dst_h as i32), // negative = top-down row order
+                biPlanes:      1,
+                biBitCount:    32,
                 biCompression: BI_RGB,
-                biSizeImage: 0,
-                biXPelsPerMeter: 0,
-                biYPelsPerMeter: 0,
-                biClrUsed: 0,
-                biClrImportant: 0,
+                biSizeImage: 0, biXPelsPerMeter: 0, biYPelsPerMeter: 0,
+                biClrUsed: 0, biClrImportant: 0,
             },
-            bmiColors: [RGBQUAD {
-                rgbBlue: 0,
-                rgbGreen: 0,
-                rgbRed: 0,
-                rgbReserved: 0,
-            }],
+            bmiColors: [RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }],
         };
         let mut pixels = vec![0u8; (dst_w * dst_h * 4) as usize];
-        GetDIBits(
-            hdc_mem,
-            hbm,
-            0,
-            dst_h,
-            pixels.as_mut_ptr() as *mut _,
-            &mut bmi,
-            DIB_RGB_COLORS,
-        );
+        GetDIBits(hdc_mem, hbm, 0, dst_h,
+                  pixels.as_mut_ptr() as *mut _, &mut bmi, DIB_RGB_COLORS);
 
         SelectObject(hdc_mem, hbm_old);
         DeleteObject(hbm);
@@ -507,14 +384,15 @@ fn capture_dxgi(cap_frac: f32) -> Option<(Vec<u8>, u32, u32, u32)> {
     use windows::Win32::Graphics::{
         Direct3D::D3D_DRIVER_TYPE_UNKNOWN,
         Direct3D11::{
-            D3D11CreateDevice, ID3D11Resource, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
-            D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+            D3D11CreateDevice, D3D11_CPU_ACCESS_READ, D3D11_MAP_READ,
+            D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+            ID3D11Resource, ID3D11Texture2D, D3D11_MAPPED_SUBRESOURCE,
         },
-        Dxgi::Common::DXGI_SAMPLE_DESC,
         Dxgi::{
             CreateDXGIFactory1, IDXGIAdapter, IDXGIFactory1, IDXGIOutput, IDXGIOutput1,
             IDXGIResource, DXGI_OUTDUPL_FRAME_INFO,
         },
+        Dxgi::Common::DXGI_SAMPLE_DESC,
     };
 
     // Walk every adapter → every output. We create a D3D device bound to each
@@ -529,148 +407,75 @@ fn capture_dxgi(cap_frac: f32) -> Option<(Vec<u8>, u32, u32, u32)> {
         let mut result: Option<(Vec<u8>, u32, u32, u32)> = None;
 
         'outer: for ai in 0u32.. {
-            let adapter = match factory.EnumAdapters(ai) {
-                Ok(a) => a,
-                Err(_) => break,
-            };
+            let adapter = match factory.EnumAdapters(ai) { Ok(a) => a, Err(_) => break };
 
             // Create a D3D device bound to THIS adapter so DuplicateOutput is same-adapter.
-            let adapter_iface: IDXGIAdapter = match adapter.cast() {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
+            let adapter_iface: IDXGIAdapter = match adapter.cast() { Ok(a) => a, Err(_) => continue };
             let mut device = None;
-            let mut ctx = None;
+            let mut ctx    = None;
             if D3D11CreateDevice(
-                Some(&adapter_iface),
-                D3D_DRIVER_TYPE_UNKNOWN,
-                None,
-                Default::default(),
-                None,
-                7,
-                Some(&mut device),
-                None,
-                Some(&mut ctx),
-            )
-            .is_err()
-            {
-                continue;
-            }
-            let device = match device {
-                Some(d) => d,
-                None => continue,
-            };
-            let ctx = match ctx {
-                Some(c) => c,
-                None => continue,
-            };
-            let unk: windows::core::IUnknown = match device.cast() {
-                Ok(u) => u,
-                Err(_) => continue,
-            };
+                Some(&adapter_iface), D3D_DRIVER_TYPE_UNKNOWN, None,
+                Default::default(), None, 7,
+                Some(&mut device), None, Some(&mut ctx),
+            ).is_err() { continue; }
+            let device = match device { Some(d) => d, None => continue };
+            let ctx    = match ctx    { Some(c) => c, None => continue };
+            let unk: windows::core::IUnknown = match device.cast() { Ok(u) => u, Err(_) => continue };
 
             for oi in 0u32.. {
-                let output: IDXGIOutput = match adapter.EnumOutputs(oi) {
-                    Ok(o) => o,
-                    Err(_) => break,
-                };
-                let out1: IDXGIOutput1 = match output.cast() {
-                    Ok(o) => o,
-                    Err(_) => continue,
-                };
+                let output: IDXGIOutput = match adapter.EnumOutputs(oi) { Ok(o) => o, Err(_) => break };
+                let out1: IDXGIOutput1  = match output.cast() { Ok(o) => o, Err(_) => continue };
 
-                let dupl = match out1.DuplicateOutput(&unk) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
+                let dupl = match out1.DuplicateOutput(&unk) { Ok(d) => d, Err(_) => continue };
 
                 // Acquire current frame (500 ms timeout)
-                let mut fi = DXGI_OUTDUPL_FRAME_INFO::default();
+                let mut fi  = DXGI_OUTDUPL_FRAME_INFO::default();
                 let mut res: Option<IDXGIResource> = None;
-                if dupl.AcquireNextFrame(500, &mut fi, &mut res).is_err() {
-                    continue;
-                }
-                let res = match res {
-                    Some(r) => r,
-                    None => {
-                        let _ = dupl.ReleaseFrame();
-                        continue;
-                    }
-                };
+                if dupl.AcquireNextFrame(500, &mut fi, &mut res).is_err() { continue; }
+                let res = match res { Some(r) => r, None => { let _ = dupl.ReleaseFrame(); continue } };
 
                 // Get the desktop texture and read its dimensions
                 let src: ID3D11Texture2D = match res.cast() {
                     Ok(t) => t,
-                    Err(_) => {
-                        let _ = dupl.ReleaseFrame();
-                        continue;
-                    }
+                    Err(_) => { let _ = dupl.ReleaseFrame(); continue }
                 };
                 let mut src_desc = D3D11_TEXTURE2D_DESC::default();
                 src.GetDesc(&mut src_desc);
                 let full_w = src_desc.Width;
                 let full_h = src_desc.Height;
-                if full_w < 100 || full_h < 100 {
-                    let _ = dupl.ReleaseFrame();
-                    continue;
-                }
+                if full_w < 100 || full_h < 100 { let _ = dupl.ReleaseFrame(); continue; }
 
                 // Create CPU-readable staging texture (full monitor size)
                 let staging_desc = D3D11_TEXTURE2D_DESC {
-                    Width: full_w,
-                    Height: full_h,
-                    MipLevels: 1,
-                    ArraySize: 1,
-                    Format: src_desc.Format,
-                    SampleDesc: DXGI_SAMPLE_DESC {
-                        Count: 1,
-                        Quality: 0,
-                    },
-                    Usage: D3D11_USAGE_STAGING,
-                    BindFlags: Default::default(),
+                    Width:          full_w,
+                    Height:         full_h,
+                    MipLevels:      1,
+                    ArraySize:      1,
+                    Format:         src_desc.Format,
+                    SampleDesc:     DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    Usage:          D3D11_USAGE_STAGING,
+                    BindFlags:      Default::default(),
                     CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-                    MiscFlags: Default::default(),
+                    MiscFlags:      Default::default(),
                 };
                 let mut staging: Option<ID3D11Texture2D> = None;
-                if device
-                    .CreateTexture2D(&staging_desc, None, Some(&mut staging))
-                    .is_err()
-                {
-                    let _ = dupl.ReleaseFrame();
-                    continue;
+                if device.CreateTexture2D(&staging_desc, None, Some(&mut staging)).is_err() {
+                    let _ = dupl.ReleaseFrame(); continue;
                 }
-                let staging = match staging {
-                    Some(s) => s,
-                    None => {
-                        let _ = dupl.ReleaseFrame();
-                        continue;
-                    }
-                };
+                let staging = match staging { Some(s) => s, None => { let _ = dupl.ReleaseFrame(); continue } };
 
                 // GPU blit → staging → map to CPU
-                ctx.CopyResource(
-                    &staging.cast::<ID3D11Resource>().ok()?,
-                    &src.cast::<ID3D11Resource>().ok()?,
-                );
+                ctx.CopyResource(&staging.cast::<ID3D11Resource>().ok()?,
+                                 &src.cast::<ID3D11Resource>().ok()?);
 
                 let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                if ctx
-                    .Map(
-                        &staging.cast::<ID3D11Resource>().ok()?,
-                        0,
-                        D3D11_MAP_READ,
-                        0,
-                        Some(&mut mapped),
-                    )
-                    .is_err()
-                {
-                    let _ = dupl.ReleaseFrame();
-                    continue;
+                if ctx.Map(&staging.cast::<ID3D11Resource>().ok()?, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).is_err() {
+                    let _ = dupl.ReleaseFrame(); continue;
                 }
 
-                let cap_h = ((full_h as f32 * cap_frac) as u32).max(1);
+                let cap_h     = ((full_h as f32 * cap_frac) as u32).max(1);
                 let row_pitch = mapped.RowPitch as usize;
-                let src_ptr = mapped.pData as *const u8;
+                let src_ptr   = mapped.pData as *const u8;
 
                 // DXGI is typically BGRA. Swap R↔B if RGBA so OCR pipeline always gets BGRA.
                 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -679,9 +484,7 @@ fn capture_dxgi(cap_frac: f32) -> Option<(Vec<u8>, u32, u32, u32)> {
                 let mut pixels = Vec::with_capacity((full_w * cap_h * 4) as usize);
                 for row in 0..(cap_h as usize) {
                     let slice = std::slice::from_raw_parts(
-                        src_ptr.add(row * row_pitch),
-                        full_w as usize * 4,
-                    );
+                        src_ptr.add(row * row_pitch), full_w as usize * 4);
                     if swap_rb {
                         for px in slice.chunks_exact(4) {
                             pixels.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
@@ -736,9 +539,7 @@ pub fn run_windows_ocr(bmp: Vec<u8>, img_w: u32, img_h: u32) -> Result<OcrResult
     unsafe {
         windows_sys::Win32::System::Com::CoInitializeEx(
             std::ptr::null(),
-            windows_sys::Win32::System::Com::COINIT_MULTITHREADED
-                .try_into()
-                .unwrap_or(0),
+            windows_sys::Win32::System::Com::COINIT_MULTITHREADED.try_into().unwrap_or(0),
         );
     }
 
@@ -857,6 +658,15 @@ pub fn run_windows_ocr(bmp: Vec<u8>, img_w: u32, img_h: u32) -> Result<OcrResult
         }
         Ok((full, lines_out))
     })().map_err(|e| e.to_string());
+
+    // ── BEGIN ocrs fallback ──────────────────────────────────────────────────
+    // Remove this block when deleting ocr_fallback.rs + ocrs/rten from Cargo.toml.
+    if let Err(ref e) = winrt_result {
+        if e.contains("[engine]") {
+            return crate::ocr_fallback::run_ocrs(&bmp, img_w, img_h);
+        }
+    }
+    // ── END ocrs fallback ────────────────────────────────────────────────────
 
     winrt_result
 }

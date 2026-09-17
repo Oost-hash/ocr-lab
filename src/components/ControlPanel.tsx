@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { TAURI_EVENTS } from "../constants/tauri";
 import ImagePicker from "./ImagePicker";
 import ResultView from "./ResultView";
 import ScreenshotHistory from "./ScreenshotHistory";
+import LivePipeline from "./LivePipeline";
+import { useOverlays } from "../../src-tauri/src/prod-code/frontend/hooks/useOverlays";
 
 interface ParsedResult {
   is_complete: boolean;
@@ -16,6 +18,8 @@ interface ParsedResult {
 }
 
 export default function ControlPanel() {
+  const [, setProductionQuantities] = useState<Record<string, number>>({});
+  useOverlays(setProductionQuantities);
   const [imagePath, setImagePath] = useState<string | null>(null);
   const [imagePaths, setImagePaths] = useState<string[]>([]);
   const [imageIndex, setImageIndex] = useState(0);
@@ -27,7 +31,52 @@ export default function ControlPanel() {
   const [playing, setPlaying] = useState(false);
   const [intervalMs, setIntervalMs] = useState(1000);
   const [virtualGameVisible, setVirtualGameVisible] = useState(false);
+  const [activeTab, setActiveTab] = useState<"static" | "live">("static");
+  const [scanStage, setScanStage] = useState<"scanning" | "done" | null>(null);
   const playbackToken = useRef(0);
+  const scanDoneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let unlistenRun: (() => void) | undefined;
+    let unlistenStatus: (() => void) | undefined;
+    let unlistenScan: (() => void) | undefined;
+    let unlistenTrigger: (() => void) | undefined;
+
+    void listen<string>(TAURI_EVENTS.WARFRAME_RUN, async (event) => {
+      setLoading(false);
+      setError(null);
+      setResult(event.payload);
+      setStatus("Warframe reward captured");
+      try {
+        const parsed: ParsedResult = JSON.parse(event.payload);
+        await showToolOverlay();
+        await emit(TAURI_EVENTS.UPDATE_OVERLAY, {
+          image_path: "Warframe",
+          items: parsed.items,
+          positions: parsed.positions,
+        });
+      } catch {}
+    }).then((unlisten) => { unlistenRun = unlisten; });
+
+    void listen<string>(TAURI_EVENTS.WARFRAME_STATUS, (event) => {
+      setStatus(event.payload);
+    }).then((unlisten) => { unlistenStatus = unlisten; });
+
+    void listen<{ source: string; detail: string }>(TAURI_EVENTS.PRODUCTION_SCAN, (event) => {
+      setStatus(`[lab observer: ${event.payload.source}] ${event.payload.detail}`);
+    }).then((unlisten) => { unlistenScan = unlisten; });
+
+    void listen<{ source: string; detail: string }>(TAURI_EVENTS.PRODUCTION_TRIGGER, (event) => {
+      setStatus(`[lab trigger: ${event.payload.source}] ${event.payload.detail}`);
+    }).then((unlisten) => { unlistenTrigger = unlisten; });
+
+    return () => {
+      unlistenRun?.();
+      unlistenStatus?.();
+      unlistenScan?.();
+      unlistenTrigger?.();
+    };
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -56,6 +105,8 @@ export default function ControlPanel() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setScanStage("scanning");
+    if (scanDoneTimer.current) clearTimeout(scanDoneTimer.current);
     setStatus(sourceKind === "window" ? "Capturing virtual game..." : "Running...");
 
     const startTime = performance.now();
@@ -72,6 +123,8 @@ export default function ControlPanel() {
 
       const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
       setStatus(`Done in ${elapsed}s`);
+      setScanStage("done");
+      scanDoneTimer.current = setTimeout(() => setScanStage(null), 4000);
 
       try {
         const parsed: ParsedResult = JSON.parse(output);
@@ -95,6 +148,7 @@ export default function ControlPanel() {
     } catch (e) {
       setError(String(e));
       setStatus(null);
+      setScanStage(null);
     } finally {
       setLoading(false);
     }
@@ -153,6 +207,7 @@ export default function ControlPanel() {
   };
 
   const wait = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+  const selectedName = imagePath?.split(/[\\/]/).pop();
 
   const startPlayback = async () => {
     if (imagePaths.length === 0 || playing) return;
@@ -202,79 +257,90 @@ export default function ControlPanel() {
 
   return (
     <div className="control-panel">
-      <div className="toolbar">
-        <ImagePicker onSelect={selectImages} disabled={loading || playing} />
-
-        <div className="carousel-controls" aria-label="Image carousel">
-          <button
-            className="secondary"
-            onClick={() => moveFrame(-1)}
-            disabled={loading || playing || imagePaths.length < 2}
-          >
-            Previous
-          </button>
-          <span className="carousel-position">
-            {imagePaths.length > 0 ? `${imageIndex + 1} / ${imagePaths.length}` : "No images"}
-          </span>
-          <button
-            className="secondary"
-            onClick={() => moveFrame(1)}
-            disabled={loading || playing || imagePaths.length < 2}
-          >
-            Next
-          </button>
-        </div>
-
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={virtualGameVisible}
-            disabled={!imagePath || playing}
-            onChange={(event) => { void setVirtualGameVisibility(event.target.checked); }}
-          />
-          <span>Show virtual game</span>
-        </label>
-
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={preprocess}
-            onChange={(e) => setPreprocess(e.target.checked)}
-          />
-          <span>Preprocess</span>
-        </label>
-
-        <button onClick={() => handleRun()} disabled={!imagePath || loading || playing}>
-          {loading ? "Running..." : "Run file"}
-        </button>
-
-        <button className="secondary" onClick={() => handleRun("window")} disabled={!imagePath || loading || playing}>
-          Run virtual game
-        </button>
-
-        <label className="interval-control">
-          <span>Gap</span>
-          <input
-            type="number"
-            min="0"
-            step="100"
-            value={intervalMs}
-            disabled={playing}
-            onChange={(event) => setIntervalMs(Math.max(0, Number(event.target.value) || 0))}
-          />
-          <span>ms</span>
-        </label>
-
+      <div className="tabs" role="tablist" aria-label="OCR Lab mode">
         <button
-          className={playing ? "danger" : "secondary"}
-          onClick={playing ? stopPlayback : startPlayback}
-          disabled={!playing && imagePaths.length === 0}
+          className={activeTab === "static" ? "tab active" : "tab"}
+          role="tab"
+          aria-selected={activeTab === "static"}
+          onClick={() => setActiveTab("static")}
         >
-          {playing ? "Stop sequence" : "Play sequence"}
+          Static tests
+        </button>
+        <button
+          className={activeTab === "live" ? "tab active" : "tab"}
+          role="tab"
+          aria-selected={activeTab === "live"}
+          onClick={() => setActiveTab("live")}
+        >
+          Live scanner
         </button>
       </div>
 
-      <div className="content">
+      {activeTab === "static" ? <div className="static-scanner">
+      <header className="static-header">
+        <div>
+          <span className="live-eyebrow">Controlled replay</span>
+          <h2>Static OCR bench</h2>
+          <p>Compare direct file recognition with the captured Virtual Game path.</p>
+        </div>
+        <div className={`source-state ${imagePath ? "has-source" : ""}`}>
+          <span>{imagePaths.length || 0}</span>
+          {imagePaths.length === 1 ? "source" : "sources"}
+        </div>
+      </header>
+
+      <div className="static-toolbar">
+        <section className="static-control-group source-controls">
+          <span className="control-kicker">Source</span>
+          <div className="control-row">
+            <ImagePicker onSelect={selectImages} disabled={loading || playing} />
+            <div className="carousel-controls" aria-label="Image carousel">
+              <button className="secondary compact" onClick={() => moveFrame(-1)} disabled={loading || playing || imagePaths.length < 2}>Previous</button>
+              <span className="carousel-position">{imagePaths.length > 0 ? `${imageIndex + 1} / ${imagePaths.length}` : "No images"}</span>
+              <button className="secondary compact" onClick={() => moveFrame(1)} disabled={loading || playing || imagePaths.length < 2}>Next</button>
+            </div>
+          </div>
+          <span className="selected-source" title={imagePath ?? undefined}>{selectedName ?? "Select one or more reward screenshots"}</span>
+        </section>
+
+        <section className="static-control-group processing-controls">
+          <span className="control-kicker">Processing</span>
+          <div className="control-row option-row">
+            <label className="checkbox-label">
+              <input type="checkbox" checked={preprocess} onChange={(e) => setPreprocess(e.target.checked)} />
+              <span>Preprocess</span>
+            </label>
+            <label className="checkbox-label">
+              <input type="checkbox" checked={virtualGameVisible} disabled={!imagePath || playing}
+                onChange={(event) => { void setVirtualGameVisibility(event.target.checked); }} />
+              <span>Show game</span>
+            </label>
+          </div>
+          <div className="control-row run-actions">
+            <button onClick={() => handleRun()} disabled={!imagePath || loading || playing}>{loading ? "Running..." : "Run file"}</button>
+            <button className="secondary" onClick={() => handleRun("window")} disabled={!imagePath || loading || playing}>Run virtual</button>
+          </div>
+        </section>
+
+        <section className="static-control-group sequence-controls">
+          <span className="control-kicker">Sequence</span>
+          <div className="control-row">
+            <label className="interval-control">
+              <span>Gap</span>
+              <input type="number" min="0" step="100" value={intervalMs} disabled={playing}
+                onChange={(event) => setIntervalMs(Math.max(0, Number(event.target.value) || 0))} />
+              <span>ms</span>
+            </label>
+            <button className={playing ? "danger" : "secondary"} onClick={playing ? stopPlayback : startPlayback}
+              disabled={!playing && imagePaths.length === 0}>{playing ? "Stop" : "Play all"}</button>
+          </div>
+          <span className="sequence-hint">Replays every selected frame through Virtual Game.</span>
+        </section>
+
+        {scanStage && <span className={`scan-badge scan-${scanStage}`}>{scanStage === "scanning" ? "Scanning..." : "Done"}</span>}
+      </div>
+
+      <div className="content static-content">
         {error && (
           <div className="error" onClick={() => setError(null)}>
             <span>{error}</span>
@@ -284,8 +350,20 @@ export default function ControlPanel() {
 
         {result && <ResultView result={result} />}
 
+        {!result && !error && (
+          <div className={`static-empty ${imagePath ? "is-ready" : ""}`}>
+            <span className="empty-index">{imagePath ? String(imageIndex + 1).padStart(2, "0") : "--"}</span>
+            <div>
+              <span className="section-kicker">{imagePath ? "Ready to inspect" : "No source loaded"}</span>
+              <h3>{selectedName ?? "Build a repeatable OCR test"}</h3>
+              <p>{imagePath ? "Run the file directly, or route it through Virtual Game to include window capture." : "Select screenshots to compare preprocessing, capture routes and OCR timings."}</p>
+            </div>
+          </div>
+        )}
+
         <ScreenshotHistory />
       </div>
+      </div> : <LivePipeline />}
 
       {status && (
         <div className="status-bar">

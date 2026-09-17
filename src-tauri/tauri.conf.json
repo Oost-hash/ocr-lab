@@ -12,6 +12,22 @@
   "app": {
     "windows": [
       {
+        "label": "relic-overlay",
+        "url": "index.html?overlay",
+        "title": "FrameForge Overlay",
+        "width": 1920,
+        "height": 400,
+        "x": 0,
+        "y": -3000,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false
+      },
+      {
         "label": "main",
         "title": "OCR Lab — Control Panel",
         "width": 900,
@@ -20,6 +36,23 @@
         "minHeight": 480,
         "visible": true,
         "backgroundColor": "#161b22"
+      },
+      {
+        "label": "relic-pick-overlay",
+        "url": "index.html?relic-pick-overlay",
+        "title": "FrameForge Relic Pick Overlay",
+        "width": 440,
+        "height": 700,
+        "x": 0,
+        "y": -3000,
+        "visible": false,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false
       },
       {
         "label": "virtual-screen",

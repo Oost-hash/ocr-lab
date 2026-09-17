@@ -5,7 +5,7 @@
 //! catalog matching, and reward item extraction).
 
 #[cfg(target_os = "windows")]
-pub mod windows;
+mod windows;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -962,42 +962,17 @@ pub fn match_reward_items(
 
 /// Relic reward detection — the main entry point for OCR-based reward extraction.
 #[cfg(target_os = "windows")]
-pub struct TimedRewardExtraction {
-    pub is_complete: bool,
-    pub skip: bool,
-    pub items: Vec<String>,
-    pub positions: Vec<f32>,
-    pub debug: String,
-    pub bmp_encode_ms: u128,
-    pub ocr_ms: u128,
-    pub match_ms: u128,
-}
+pub fn extract_reward_items_twophase(
+    params: super::OcrParams<'_>,
+) -> (bool, bool, Vec<String>, Vec<f32>, String) {
+    let super::OcrParams { pixels, pix_w, pix_h, game_h: _game_h, catalog, capture_info, hint_squad_size, player_names } = params;
 
-#[cfg(target_os = "windows")]
-pub fn extract_reward_items_timed(
-    params: crate::OcrParams<'_>,
-) -> TimedRewardExtraction {
-    let crate::OcrParams { pixels, pix_w, pix_h, game_h: _game_h, catalog, capture_info, hint_squad_size, player_names } = params;
-
-    let bmp_encode_started = std::time::Instant::now();
-    let bmp = to_bmp(pixels, pix_w, pix_h);
-    let bmp_encode_ms = bmp_encode_started.elapsed().as_millis();
-    let ocr_started = std::time::Instant::now();
     let (raw_full, ocr_lines) =
-        match windows::run_windows_ocr(bmp, pix_w, pix_h) {
+        match windows::run_windows_ocr(to_bmp(pixels, pix_w, pix_h), pix_w, pix_h) {
             Ok(r) => r,
-            Err(e) => return TimedRewardExtraction {
-                is_complete: false,
-                skip: false,
-                items: vec![],
-                positions: vec![],
-                debug: format!("├─ Capture  : {}\n└─ OCR error: {}", capture_info, e),
-                bmp_encode_ms,
-                ocr_ms: ocr_started.elapsed().as_millis(),
-                match_ms: 0,
-            },
+            Err(e) => return (false, false, vec![], vec![],
+                format!("├─ Capture  : {}\n└─ OCR error: {}", capture_info, e)),
         };
-    let ocr_ms = ocr_started.elapsed().as_millis();
     if raw_full.len() < 4 {
         let _ = std::fs::write(
             std::env::temp_dir().join("frameforge_capture_debug.bmp"),
@@ -1005,97 +980,32 @@ pub fn extract_reward_items_timed(
         );
         let avg = windows::avg_brightness(pixels);
         let kind = if avg < 30 { "dark-frame" } else { "ocr-empty" };
-        return TimedRewardExtraction {
-            is_complete: false,
-            skip: false,
-            items: vec![],
-            positions: vec![],
-            debug: format!(
-                "├─ Capture  : {}\n└─ OCR      : returned no text ({}, avg={})\n   Saved: %TEMP%\\frameforge_capture_debug.bmp",
-                capture_info, kind, avg
-            ),
-            bmp_encode_ms,
-            ocr_ms,
-            match_ms: 0,
-        };
+        return (false, false, vec![], vec![], format!(
+            "├─ Capture  : {}\n└─ OCR      : returned no text ({}, avg={})\n   Saved: %TEMP%\\frameforge_capture_debug.bmp",
+            capture_info, kind, avg
+        ));
     }
 
     {
         let lower = raw_full.to_lowercase();
         const QUALITY: &[&str] = &["intact", "exceptional", "flawless", "radiant"];
         if lower.contains(" relic") && QUALITY.iter().any(|q| lower.contains(q)) {
-            return TimedRewardExtraction {
-                is_complete: false,
-                skip: true,
-                items: vec![],
-                positions: vec![],
-                debug: format!(
-                    "├─ Capture  : {}\n└─ OCR      : relic selection screen detected (skipped)",
-                    capture_info
-                ),
-                bmp_encode_ms,
-                ocr_ms,
-                match_ms: 0,
-            };
+            return (false, true, vec![], vec![], format!(
+                "├─ Capture  : {}\n└─ OCR      : relic selection screen detected (skipped)",
+                capture_info
+            ));
         }
     }
 
-    let match_started = std::time::Instant::now();
-    let (is_complete, skip, items, positions, debug) = match_reward_items(MatchParams {
+    match_reward_items(MatchParams {
         pixels, pix_w, pix_h, raw_full: &raw_full, ocr_lines: &ocr_lines,
         catalog, capture_info, hint_squad_size, player_names,
-    });
-    TimedRewardExtraction {
-        is_complete,
-        skip,
-        items,
-        positions,
-        debug,
-        bmp_encode_ms,
-        ocr_ms,
-        match_ms: match_started.elapsed().as_millis(),
-    }
-}
-
-#[cfg(target_os = "windows")]
-pub fn extract_reward_items_twophase(
-    params: crate::OcrParams<'_>,
-) -> (bool, bool, Vec<String>, Vec<f32>, String) {
-    let result = extract_reward_items_timed(params);
-    (result.is_complete, result.skip, result.items, result.positions, result.debug)
-}
-
-#[cfg(not(target_os = "windows"))]
-pub struct TimedRewardExtraction {
-    pub is_complete: bool,
-    pub skip: bool,
-    pub items: Vec<String>,
-    pub positions: Vec<f32>,
-    pub debug: String,
-    pub bmp_encode_ms: u128,
-    pub ocr_ms: u128,
-    pub match_ms: u128,
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn extract_reward_items_timed(
-    _params: crate::OcrParams<'_>,
-) -> TimedRewardExtraction {
-    TimedRewardExtraction {
-        is_complete: false,
-        skip: false,
-        items: vec![],
-        positions: vec![],
-        debug: "OCR not supported on this platform".into(),
-        bmp_encode_ms: 0,
-        ocr_ms: 0,
-        match_ms: 0,
-    }
+    })
 }
 
 #[cfg(not(target_os = "windows"))]
 pub fn extract_reward_items_twophase(
-    _params: crate::OcrParams<'_>,
+    _params: super::OcrParams<'_>,
 ) -> (bool, bool, Vec<String>, Vec<f32>, String) {
     (false, false, vec![], vec![], "OCR not supported on this platform".into())
 }

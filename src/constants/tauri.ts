@@ -3,6 +3,10 @@ export const TAURI_EVENTS = {
   UPDATE_OVERLAY: "ocr-update-overlay",
   CLEAR_OVERLAY: "ocr-clear-overlay",
   SCREENSHOT_SELECTED: "ocr-screenshot-selected",
+  WARFRAME_RUN: "ocr-warframe-run",
+  WARFRAME_STATUS: "ocr-warframe-status",
+  PRODUCTION_SCAN: "ocr-production-scan",
+  PRODUCTION_TRIGGER: "ocr-production-trigger",
 } as const;
 
 export const TAURI_COMMANDS = {

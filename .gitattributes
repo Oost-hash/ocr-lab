@@ -1,0 +1,2 @@
+# Preserve the original production bytes, including original line endings.
+src-tauri/src/prod-code/** -text

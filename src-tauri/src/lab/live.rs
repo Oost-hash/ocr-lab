@@ -7,8 +7,19 @@ use tracing::{field::{Field, Visit}, Event};
 use tracing_subscriber::{layer::{Context, SubscriberExt}, registry::LookupSpan, Layer};
 use crate::{app_state::AppState, wfcd::{RelicReward, WfcdItem, RecipeComponent}};
 
+#[derive(serde::Serialize)]
+pub(crate) struct LiveCapture {
+    id: String,
+    timestamp: String,
+    image_path: PathBuf,
+    log: Option<String>,
+    outcome: &'static str,
+    reason: &'static str,
+}
+
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
 static RECORDER: OnceLock<Recorder> = OnceLock::new();
+static CURRENT_CAPTURE_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static STARTED: AtomicBool = AtomicBool::new(false);
 static OVERLAY_READY: AtomicBool = AtomicBool::new(false);
 static CYCLE: AtomicU64 = AtomicU64::new(0);
@@ -85,6 +96,123 @@ pub(crate) fn record(name: &str, detail: Value) {
     }
 }
 
+pub(crate) fn set_capture_session(path: Option<PathBuf>) {
+    *CURRENT_CAPTURE_DIR.get_or_init(|| Mutex::new(None)).lock()
+        .unwrap_or_else(|error| error.into_inner()) = path;
+}
+
+pub(crate) fn preserve_issue_frame(app: &tauri::AppHandle, kind: &str, attempt: u32) {
+    let frame = app.state::<AppState>().last_ocr_frame.lock()
+        .ok().and_then(|frame| frame.clone());
+    let directory = CURRENT_CAPTURE_DIR.get()
+        .and_then(|directory| directory.lock().ok().and_then(|path| path.clone()));
+    if let (Some((pixels, width, height)), Some(directory)) = (frame, directory) {
+        let path = directory.join(format!("issue-{kind}-attempt-{attempt}.bmp"));
+        match crate::diagnostics::write_bmp(&path, &pixels, width, height) {
+            Ok(()) => record("ocr_issue_capture_saved", json!({
+                "attempt": attempt, "kind": kind, "path": path,
+            })),
+            Err(error) => record("ocr_issue_capture_failed", json!({
+                "attempt": attempt, "kind": kind, "error": error.to_string(),
+            })),
+        }
+    }
+}
+
+fn capture_relic_picker_failure() -> Result<(PathBuf, String), String> {
+    let (pixels, width, height) = crate::ocr::capture_warframe_pixels()?;
+    let raw_text = crate::ocr::ocr_pixels_rect(&pixels, width, height, 0.0, 0.5, 0.0, 0.25)
+        .unwrap_or_else(|error| format!("[OCR error: {error}]"));
+    let crop_width = width / 2;
+    let crop_height = height / 4;
+    let mut cropped = Vec::with_capacity((crop_width * crop_height * 4) as usize);
+    for row in 0..crop_height as usize {
+        let start = row * width as usize * 4;
+        let end = start + crop_width as usize * 4;
+        cropped.extend_from_slice(&pixels[start..end]);
+    }
+
+    let root = ROOT.get().ok_or("Lab environment not initialized")?;
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S%.3f").to_string();
+    let directory = root.join("production-captures").join(format!("relic-picker-{timestamp}"));
+    std::fs::create_dir_all(&directory).map_err(|error| format!("Create {}: {error}", directory.display()))?;
+    let image_path = directory.join("issue-era-ocr-attempt-1.bmp");
+    crate::diagnostics::write_bmp(&image_path, &cropped, crop_width, crop_height)
+        .map_err(|error| format!("Write {}: {error}", image_path.display()))?;
+    let log = format!(
+        "RELIC PICKER ERA OCR FAILURE\nCapture region: left 50%, top 25% ({crop_width}x{crop_height})\nExpected: LITH, MESO, NEO, AXI, or ALL\nRaw OCR:\n{}\n",
+        if raw_text.trim().is_empty() { "(no text)" } else { raw_text.trim() },
+    );
+    std::fs::write(directory.join("ocr_session_log.txt"), log)
+        .map_err(|error| format!("Write relic picker diagnosis: {error}"))?;
+    Ok((image_path, raw_text))
+}
+
+#[tauri::command]
+pub(crate) fn load_live_captures() -> Result<Vec<LiveCapture>, String> {
+    let runs = crate::runs_dir()?;
+    if !runs.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut captures = Vec::new();
+    for run in std::fs::read_dir(&runs).map_err(|error| format!("Read {}: {error}", runs.display()))? {
+        let run = run.map_err(|error| format!("Read run entry: {error}"))?;
+        let run_name = run.file_name().to_string_lossy().to_string();
+        if !run_name.starts_with("live-") || !run.path().is_dir() {
+            continue;
+        }
+        let capture_root = run.path().join("production-captures");
+        if !capture_root.is_dir() {
+            continue;
+        }
+        for session in std::fs::read_dir(&capture_root)
+            .map_err(|error| format!("Read {}: {error}", capture_root.display()))?
+        {
+            let session = session.map_err(|error| format!("Read capture entry: {error}"))?;
+            let session_name = session.file_name().to_string_lossy().to_string();
+            let log = std::fs::read_to_string(session.path().join("ocr_session_log.txt")).ok();
+            let (session_outcome, session_reason) = match log.as_deref() {
+                Some(text) if text.contains("[STEP 3] OVERLAY OPENED") => ("success", "Overlay opened"),
+                Some(text) if text.contains("OCR TIMEOUT") => ("failed", "OCR timed out"),
+                Some(text) if text.contains("OCR STOPPED") => ("failed", "OCR stopped before confirmation"),
+                Some(_) => ("failed", "No confirmed overlay"),
+                None => ("pending", "Session is still being recorded"),
+            };
+            let images = std::fs::read_dir(session.path())
+                .map_err(|error| format!("Read {}: {error}", session.path().display()))?;
+            for image in images {
+                let image = image.map_err(|error| format!("Read capture image: {error}"))?;
+                let name = image.file_name().to_string_lossy().to_string();
+                if !name.ends_with(".bmp") {
+                    continue;
+                }
+                let issue_reason = if name.starts_with("issue-no-match-") {
+                    Some("No catalog match")
+                } else if name.starts_with("issue-ocr-empty-") {
+                    Some("OCR returned no text")
+                } else if name.starts_with("issue-dark-frame-") {
+                    Some("Dark capture")
+                } else if name.starts_with("issue-era-ocr-") {
+                    Some("Relic picker era not detected")
+                } else {
+                    None
+                };
+                captures.push(LiveCapture {
+                    id: format!("{run_name}/{session_name}/{name}"),
+                    timestamp: session_name.clone(),
+                    image_path: image.path(),
+                    log: log.clone(),
+                    outcome: if issue_reason.is_some() { "issue" } else { session_outcome },
+                    reason: issue_reason.unwrap_or(session_reason),
+                });
+            }
+        }
+    }
+    captures.sort_by(|left, right| right.id.cmp(&left.id));
+    Ok(captures)
+}
+
 pub(crate) fn begin_cycle() {
     CYCLE.fetch_add(1, Ordering::SeqCst);
     record("ee_trigger_accepted", json!({}));
@@ -144,12 +272,15 @@ impl<S> Layer<S> for OcrTrace where S: tracing::Subscriber + for<'a> LookupSpan<
         if name == "relic_picker_ocr_result" && message.ends_with("None") {
             std::thread::spawn(|| {
                 let started = Instant::now();
-                let result = crate::ocr::capture_rect_and_ocr(0.0, 0.5, 0.0, 0.25);
-                record("relic_picker_failure_probe", json!({
-                    "duration_us": started.elapsed().as_micros(),
-                    "raw_text": result.as_deref().ok(),
-                    "error": result.err(),
-                }));
+                match capture_relic_picker_failure() {
+                    Ok((path, raw_text)) => record("relic_picker_failure_probe", json!({
+                        "duration_us": started.elapsed().as_micros(),
+                        "raw_text": raw_text, "screenshot": path,
+                    })),
+                    Err(error) => record("relic_picker_failure_probe", json!({
+                        "duration_us": started.elapsed().as_micros(), "error": error,
+                    })),
+                }
             });
         }
     }

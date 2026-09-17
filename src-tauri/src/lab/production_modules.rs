@@ -87,6 +87,7 @@ pub(crate) mod log_watcher {
         }));
         original::prepare_reward_session(session_log_path, names, timestamp, trigger_line,
             prefilter_log, catalog_len, auto_capture_dir, diag_dir, last_found_path);
+        crate::live::set_capture_session(diag_dir.lock().ok().and_then(|path| path.clone()));
     }
 
     pub(crate) async fn capture_reward_items(
@@ -100,5 +101,35 @@ pub(crate) mod log_watcher {
             "duration_us": started.elapsed().as_micros(), "result": result,
         }));
         result
+    }
+
+    pub(crate) fn log_reward_dark_frame(
+        app: &tauri::AppHandle, attempt: u32, ts: &str, dbg: &str,
+        session_log_path: &std::path::Path, last_path: &std::path::Path,
+    ) -> u64 {
+        let delay = original::log_reward_dark_frame(app, attempt, ts, dbg, session_log_path, last_path);
+        crate::live::preserve_issue_frame(app, "dark-frame", attempt);
+        delay
+    }
+
+    pub(crate) fn log_reward_ocr_empty(
+        app: &tauri::AppHandle, attempt: u32, ts: &str, dbg: &str,
+        session_log_path: &std::path::Path, last_path: &std::path::Path,
+    ) -> u64 {
+        let delay = original::log_reward_ocr_empty(app, attempt, ts, dbg, session_log_path, last_path);
+        crate::live::preserve_issue_frame(app, "ocr-empty", attempt);
+        delay
+    }
+
+    pub(crate) fn log_reward_no_match(
+        app: &tauri::AppHandle, attempt: u32, ts: &str, items: &[String], dbg: &str,
+        no_match_streak: &mut u32, cat: &mut Arc<Vec<(String, String)>>,
+        fallback_cat: &Arc<Vec<(String, String)>>, session_log_path: &std::path::Path,
+        last_path: &std::path::Path, diag_dir: &Arc<Mutex<Option<std::path::PathBuf>>>,
+    ) -> u64 {
+        let delay = original::log_reward_no_match(app, attempt, ts, items, dbg, no_match_streak,
+            cat, fallback_cat, session_log_path, last_path, diag_dir);
+        crate::live::preserve_issue_frame(app, "no-match", attempt);
+        delay
     }
 }

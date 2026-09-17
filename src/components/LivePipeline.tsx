@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 interface TraceEvent {
   event: string;
@@ -26,6 +26,15 @@ interface Snapshot {
   path: string;
   events: TraceEvent[];
   write_error: string | null;
+}
+
+interface LiveCapture {
+  id: string;
+  timestamp: string;
+  image_path: string;
+  log: string | null;
+  outcome: "issue" | "failed" | "success" | "pending";
+  reason: string;
 }
 
 function detailRecord(event: TraceEvent | undefined): Record<string, unknown> | null {
@@ -155,6 +164,10 @@ export default function LivePipeline() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [memoryTrigger, setMemoryTrigger] = useState(false);
+  const [captures, setCaptures] = useState<LiveCapture[]>([]);
+  const [capturesError, setCapturesError] = useState<string | null>(null);
+  const [issuesOnly, setIssuesOnly] = useState(true);
+  const [selectedCapture, setSelectedCapture] = useState<LiveCapture | null>(null);
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -168,6 +181,30 @@ export default function LivePipeline() {
     void refresh();
     return () => { disposed = true; clearTimeout(timer); };
   }, []);
+
+  const refreshCaptures = async () => {
+    try {
+      setCaptures(await invoke<LiveCapture[]>("load_live_captures"));
+      setCapturesError(null);
+    } catch (error) {
+      setCapturesError(String(error));
+    }
+  };
+
+  useEffect(() => {
+    void refreshCaptures();
+    const timer = setInterval(() => void refreshCaptures(), 3000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCapture) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedCapture(null);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [selectedCapture]);
 
   const run = async (command: string) => {
     setBusy(true);
@@ -202,6 +239,10 @@ export default function LivePipeline() {
   const elapsed = triggerAt !== undefined && lastStageAt !== undefined
     ? lastStageAt - triggerAt
     : undefined;
+  const visibleCaptures = issuesOnly
+    ? captures.filter((capture) => capture.outcome === "issue" || capture.outcome === "failed")
+    : captures;
+  const issueCount = captures.filter((capture) => capture.outcome === "issue" || capture.outcome === "failed").length;
   let previousAt = triggerAt;
 
   return <div className="content live-scanner">
@@ -279,6 +320,48 @@ export default function LivePipeline() {
     </div>
     {snapshot?.path && <p>Run files: <code>{snapshot.path}</code></p>}
     <p className="measurement-note">Paint-ready is a frontend marker, not proof of physical display. Use a recording or the manual marker for game-screen correlation.</p>
+    <section className="capture-review">
+      <div className="capture-review-heading">
+        <div>
+          <span className="section-kicker">Visual evidence</span>
+          <h3>Capture review</h3>
+          <p>{issueCount} issue captures of {captures.length} saved frames</p>
+        </div>
+        <div className="capture-review-actions">
+          <label className="checkbox-label">
+            <input type="checkbox" checked={issuesOnly} onChange={(event) => setIssuesOnly(event.target.checked)} />
+            Only issues
+          </label>
+          <button className="secondary" onClick={() => void refreshCaptures()}>Refresh</button>
+        </div>
+      </div>
+      {capturesError && <div className="error">Capture history failed: {capturesError}</div>}
+      {!capturesError && visibleCaptures.length === 0 && (
+        <div className="capture-empty">
+          <strong>{issuesOnly ? "No OCR issues captured" : "No captures yet"}</strong>
+          <span>{issuesOnly && captures.length > 0 ? "Clear the filter to inspect successful or pending sessions." : "Retry and matching failures appear here automatically."}</span>
+        </div>
+      )}
+      <div className="capture-grid">
+        {visibleCaptures.map((capture) => <article className={`capture-card capture-${capture.outcome}`} key={capture.id}>
+          <button className="capture-image" onClick={() => setSelectedCapture(capture)} title="View full size">
+            <img src={convertFileSrc(capture.image_path)} alt={`Reward capture ${capture.timestamp}`} loading="lazy" />
+          </button>
+          <div className="capture-card-body">
+            <div className="capture-card-title">
+              <strong>{capture.reason}</strong>
+              <span>{capture.outcome}</span>
+            </div>
+            <code>{capture.timestamp.replace(/_/g, " ")}</code>
+            {capture.log && <details><summary>OCR diagnosis</summary><pre>{capture.log}</pre></details>}
+          </div>
+        </article>)}
+      </div>
+    </section>
+    {selectedCapture && <div className="capture-lightbox" role="dialog" aria-modal="true" aria-label={`Reward capture ${selectedCapture.timestamp}`} onClick={() => setSelectedCapture(null)}>
+      <button className="capture-lightbox-close" onClick={() => setSelectedCapture(null)}>Close</button>
+      <img src={convertFileSrc(selectedCapture.image_path)} alt={`Reward capture ${selectedCapture.timestamp}`} onClick={(event) => event.stopPropagation()} />
+    </div>}
     <div className="live-timeline">
       <div className="timeline-heading">
         <div><span className="section-kicker">Evidence</span><h3>Raw timeline</h3></div>

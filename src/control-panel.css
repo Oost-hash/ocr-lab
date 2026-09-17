@@ -146,6 +146,33 @@
 .live-status-strip i.ok { background: var(--green); }
 .live-status-strip i.cold { background: var(--yellow); }
 .measurement-note { border-left: 2px solid #33485e; padding-left: 9px; }
+.capture-review { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.capture-review-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 10px; }
+.capture-review-heading h3 { margin: 2px 0; font-size: 17px; }
+.capture-review-heading p { margin: 0; color: var(--text-secondary); font-size: 11px; }
+.capture-review-actions { display: flex; align-items: center; gap: 12px; }
+.capture-review-actions button { padding: 6px 10px; }
+.capture-empty { display: grid; gap: 3px; border: 1px dashed #2d3b4d; border-radius: 10px; padding: 22px; color: var(--text-secondary); text-align: center; }
+.capture-empty strong { color: var(--text); font-size: 13px; }
+.capture-empty span { font-size: 11px; }
+.capture-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.capture-card { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: rgba(22, 27, 34, 0.9); }
+.capture-image { display: block; width: 100%; border: 0; border-radius: 0; padding: 0; background: #080b0f; cursor: zoom-in; }
+.capture-image img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+.capture-card-body { display: grid; gap: 6px; padding: 10px; }
+.capture-card-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.capture-card-title strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.capture-card-title span { border-radius: 999px; padding: 2px 6px; color: var(--text-secondary); background: var(--surface-hover); font-family: var(--mono); font-size: 8px; text-transform: uppercase; }
+.capture-failed, .capture-issue { border-color: rgba(248, 81, 73, 0.38); }
+.capture-failed .capture-card-title span, .capture-issue .capture-card-title span { color: #ff8d85; background: rgba(248, 81, 73, 0.1); }
+.capture-success .capture-card-title span { color: #62d273; background: rgba(63, 185, 80, 0.1); }
+.capture-card code { overflow: hidden; color: var(--text-secondary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.capture-card details { min-width: 0; }
+.capture-card summary { cursor: pointer; color: var(--accent); font-size: 10px; }
+.capture-card pre { max-height: 220px; margin-top: 7px; overflow: auto; white-space: pre-wrap; color: var(--text-secondary); font-family: var(--mono); font-size: 9px; line-height: 1.45; }
+.capture-lightbox { position: fixed; z-index: 50; inset: 0; display: grid; place-items: center; padding: 48px 24px 24px; background: rgba(3, 6, 10, 0.94); }
+.capture-lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.7); }
+.capture-lightbox-close { position: absolute; top: 12px; right: 16px; }
 .live-timeline { overflow-x: auto; margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
 .timeline-heading { display: flex; justify-content: space-between; align-items: end; margin-bottom: 8px; }
 .timeline-heading > span { color: var(--text-secondary); font-family: var(--mono); font-size: 10px; }
@@ -161,6 +188,8 @@
   .cycle-overview { overflow-x: auto; }
   .pipeline-rail { overflow: visible; }
   .live-toolbar .checkbox-label { width: 100%; margin-right: 0; }
+  .capture-review-heading { align-items: flex-start; flex-direction: column; }
+  .capture-grid { grid-template-columns: 1fr; }
 }
 
 .live-scanner > h2 {

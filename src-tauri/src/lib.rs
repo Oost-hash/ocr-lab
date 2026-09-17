@@ -590,6 +590,7 @@ pub fn run() {
             live::start_live_production,
             live::stop_live_production,
             live::get_live_snapshot,
+            live::load_live_captures,
             live::record_lab_frontend,
             live::test_live_relic_picker,
             diagnostics::log_relic_fe,

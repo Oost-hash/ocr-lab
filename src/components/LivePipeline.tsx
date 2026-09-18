@@ -37,6 +37,23 @@ interface LiveCapture {
   reason: string;
 }
 
+interface CandidateResult {
+  trigger_id: string;
+  status: string;
+  total_ms: number;
+  error: string | null;
+  phases: {
+    trigger: { status: string };
+    capture: { status: string };
+    rendering: { status: string };
+  };
+}
+
+interface CandidateSnapshot {
+  enabled: boolean;
+  result: CandidateResult | null;
+}
+
 function detailRecord(event: TraceEvent | undefined): Record<string, unknown> | null {
   if (!event || typeof event.detail !== "object" || event.detail === null || Array.isArray(event.detail)) return null;
   return event.detail as Record<string, unknown>;
@@ -164,6 +181,8 @@ export default function LivePipeline() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [memoryTrigger, setMemoryTrigger] = useState(false);
+  const [baselineEnabled, setBaselineEnabled] = useState(true);
+  const [candidate, setCandidate] = useState<CandidateSnapshot>({ enabled: false, result: null });
   const [captures, setCaptures] = useState<LiveCapture[]>([]);
   const [capturesError, setCapturesError] = useState<string | null>(null);
   const [issuesOnly, setIssuesOnly] = useState(true);
@@ -173,8 +192,14 @@ export default function LivePipeline() {
     let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
       try {
-        const value = await invoke<Snapshot>("get_live_snapshot");
-        if (!disposed) setSnapshot(value);
+        const [value, candidateValue] = await Promise.all([
+          invoke<Snapshot>("get_live_snapshot"),
+          invoke<CandidateSnapshot>("get_candidate_snapshot"),
+        ]);
+        if (!disposed) {
+          setSnapshot(value);
+          setCandidate(candidateValue);
+        }
       } catch (error) { if (!disposed) setError(String(error)); }
       if (!disposed) timer = setTimeout(refresh, 500);
     };
@@ -216,6 +241,22 @@ export default function LivePipeline() {
     finally { setBusy(false); }
   };
 
+  const startSelected = async () => {
+    if (baselineEnabled) {
+      await run("start_live_production");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("start_candidate_pipeline");
+    } catch (error) {
+      setError(String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const latestCycle = snapshot?.events.reduce((latest, event) => Math.max(latest, event.cycle), 0) ?? 0;
   const cycleEvents = latestCycle > 0
     ? snapshot?.events.filter((event) => event.cycle === latestCycle) ?? []
@@ -244,6 +285,32 @@ export default function LivePipeline() {
     : captures;
   const issueCount = captures.filter((capture) => capture.outcome === "issue" || capture.outcome === "failed").length;
   let previousAt = triggerAt;
+  const candidateStages: PipelineStage[] = stages.map((stage) => ({
+    ...stage,
+    state: "pending",
+    at: undefined,
+    note: undefined,
+  }));
+  if (candidate.result) {
+    const triggered = candidate.result.phases.trigger.status === "complete";
+    if (triggered) candidateStages[0] = { ...candidateStages[0], state: "complete", note: candidate.result.trigger_id };
+    if (triggered) candidateStages[2] = { ...candidateStages[2], state: "failed", note: "not implemented" };
+  }
+  const productionEnd = stages.find((stage) => stage.key === (pickerActive ? "paint" : "overlay"));
+  const productionTotal = triggerAt !== undefined && productionEnd?.at !== undefined
+    ? productionEnd.at - triggerAt
+    : undefined;
+  const productionFailed = stages.some((stage) => stage.state === "failed");
+  const productionFinished = productionFailed || productionEnd?.state === "complete";
+  const candidateFailed = Boolean(candidate.result && candidate.result.status !== "success");
+  const candidateTotal = candidate.result?.status === "success" ? candidate.result.total_ms * 1000 : undefined;
+  const losingPipeline = baselineEnabled && candidate.enabled && productionFinished && candidate.result
+    ? productionFailed !== candidateFailed
+      ? productionFailed ? "production" : "candidate"
+      : !productionFailed && productionTotal !== undefined && candidateTotal !== undefined && productionTotal !== candidateTotal
+        ? productionTotal > candidateTotal ? "production" : "candidate"
+        : null
+    : null;
 
   return <div className="content live-scanner">
     <header className="live-header">
@@ -264,7 +331,19 @@ export default function LivePipeline() {
           onChange={(event) => setMemoryTrigger(event.target.checked)} />
         Early memory trigger
       </label>
-      <button disabled={busy || !snapshot || snapshot.started} onClick={() => void run("start_live_production")}>Start live run</button>
+      <label className="checkbox-label">
+        <input type="checkbox" checked={baselineEnabled} disabled={busy || snapshot?.started}
+          onChange={(event) => setBaselineEnabled(event.target.checked)} />
+        Baseline
+      </label>
+      <label className="checkbox-label">
+        <input type="checkbox" checked={candidate.enabled} disabled={busy || snapshot?.started} onChange={(event) => {
+          void invoke<CandidateSnapshot>("set_candidate_enabled", { enabled: event.target.checked })
+            .then(setCandidate).catch((error) => setError(String(error)));
+        }} />
+        Candidate
+      </label>
+      <button disabled={busy || !snapshot || snapshot.started || (!baselineEnabled && !candidate.enabled)} onClick={() => void startSelected()}>Start live run</button>
       <button className="secondary" disabled={busy || !snapshot?.active} onClick={() => void run("stop_live_production")}>Stop</button>
       <button className="secondary" disabled={!snapshot?.active} onClick={() => {
         void invoke("record_lab_frontend", { name: "game_reward_screen_manual_marker", detail: {
@@ -288,6 +367,8 @@ export default function LivePipeline() {
         </div>
       </div>
 
+      {baselineEnabled && <div className="pipeline-lane">
+      <span className="pipeline-label">Production</span>
       <ol className="pipeline-rail">
         {stages.map((stage) => {
           const delta = stage.at !== undefined && previousAt !== undefined ? stage.at - previousAt : undefined;
@@ -310,6 +391,30 @@ export default function LivePipeline() {
           </li>;
         })}
       </ol>
+      <div className={`pipeline-total ${losingPipeline === "production" ? "is-loser" : ""}`}>
+        <span>Total</span>
+        <strong>{productionTotal === undefined ? "—" : formatDuration(productionTotal)}</strong>
+      </div>
+      </div>}
+      {candidate.enabled && <div className="pipeline-lane candidate-lane">
+        <span className="pipeline-label">Candidate</span>
+        <ol className="pipeline-rail">
+          {candidateStages.map((stage) => <li key={stage.key} className={`pipeline-stage stage-${stage.state}`}>
+            <div className="stage-node" aria-hidden="true"><span /></div>
+            <div className="stage-copy">
+              <div className="stage-title-row"><strong>{stage.label}</strong><span className="stage-state">{stage.state}</span></div>
+              <span className="stage-description">{stage.description}</span>
+              <div className="stage-timing"><b>{stage.state === "failed" ? "not implemented" : "—"}</b></div>
+              {stage.note && <span className="stage-note">{stage.note}</span>}
+            </div>
+          </li>)}
+        </ol>
+        <div className={`pipeline-total ${losingPipeline === "candidate" ? "is-loser" : ""}`}>
+          <span>Total</span>
+          <strong>{candidate.result?.status === "not_implemented" ? "NYI" : candidateTotal === undefined ? "—" : formatDuration(candidateTotal)}</strong>
+        </div>
+        {candidate.result?.error && <div className="candidate-error">{candidate.result.error}</div>}
+      </div>}
     </section>
 
     <div className="live-status-strip">

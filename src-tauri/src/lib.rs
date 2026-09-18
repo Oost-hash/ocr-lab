@@ -91,6 +91,8 @@ mod lab_ocr;
 mod live;
 #[path = "lab/app_state.rs"]
 mod app_state;
+#[path = "candidate/mod.rs"]
+mod candidate;
 #[path = "lab/production_modules.rs"]
 mod production_modules;
 use production_modules::{catalogue, diagnostics, inventory_state, log_watcher, memory_scanner, monitor, relic_pick, wfcd, worldstate};
@@ -593,6 +595,9 @@ pub fn run() {
             live::load_live_captures,
             live::record_lab_frontend,
             live::test_live_relic_picker,
+            candidate::pipeline::set_candidate_enabled,
+            candidate::pipeline::get_candidate_snapshot,
+            candidate::pipeline::start_candidate_pipeline,
             diagnostics::log_relic_fe,
             relic_pick::show_overlay_window,
             relic_pick::move_overlay_offscreen,

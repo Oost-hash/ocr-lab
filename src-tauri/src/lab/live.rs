@@ -269,14 +269,40 @@ impl<S> Layer<S> for OcrTrace where S: tracing::Subscriber + for<'a> LookupSpan<
             else if message.contains("relic-pick: trigger suppressed") { "relic_picker_trigger_suppressed" }
             else { return; };
         record(name, json!({"message": message, "target": event.metadata().target()}));
+        if name == "relic_picker_detected" {
+            if let Some(root) = ROOT.get() {
+                if let Err(error) = crate::candidate::pipeline::observe_relic_picker_trigger(root) {
+                    record("candidate_result_write_failed", json!({"error": error}));
+                }
+            }
+        } else if name == "relic_picker_ocr_result" {
+            let era = message.split("Some(\"").nth(1)
+                .and_then(|value| value.split("\")").next()).map(str::to_string);
+            if let Err(error) = crate::candidate::pipeline::observe_ocr_result(era) {
+                record("candidate_result_write_failed", json!({"error": error}));
+            }
+        } else if name == "relic_picker_payload_ready" {
+            let payload_count = message.split("relics=").nth(1)
+                .and_then(|value| value.parse::<u64>().ok());
+            if let Some(payload_count) = payload_count {
+                if let Err(error) = crate::candidate::pipeline::observe_payload(payload_count) {
+                    record("candidate_result_write_failed", json!({"error": error}));
+                }
+            }
+        }
         if name == "relic_picker_ocr_result" && message.ends_with("None") {
             std::thread::spawn(|| {
                 let started = Instant::now();
                 match capture_relic_picker_failure() {
-                    Ok((path, raw_text)) => record("relic_picker_failure_probe", json!({
-                        "duration_us": started.elapsed().as_micros(),
-                        "raw_text": raw_text, "screenshot": path,
-                    })),
+                    Ok((path, raw_text)) => {
+                        if let Err(error) = crate::candidate::pipeline::observe_failure_evidence(raw_text.clone(), path.clone()) {
+                            record("candidate_result_write_failed", json!({"error": error}));
+                        }
+                        record("relic_picker_failure_probe", json!({
+                            "duration_us": started.elapsed().as_micros(),
+                            "raw_text": raw_text, "screenshot": path,
+                        }));
+                    }
                     Err(error) => record("relic_picker_failure_probe", json!({
                         "duration_us": started.elapsed().as_micros(), "error": error,
                     })),
@@ -411,6 +437,11 @@ pub(crate) fn test_live_relic_picker(app: tauri::AppHandle, era: String) -> Resu
     }
     record("relic_picker_test_trigger", json!({"era": era}));
     let payload = crate::relic_pick::build_relic_pick_payload(&era, &app);
+    if let Some(root) = ROOT.get() {
+        crate::candidate::pipeline::observe_relic_picker_trigger(root)?;
+        crate::candidate::pipeline::observe_ocr_result(Some(era.clone()))?;
+        crate::candidate::pipeline::observe_payload(payload["relics"].as_array().map_or(0, Vec::len) as u64)?;
+    }
     crate::relic_pick::relic_pick_show(&app);
     app.emit("relic-pick-open", &payload).map_err(|error| error.to_string())?;
     Ok(payload)
@@ -426,6 +457,13 @@ pub(crate) fn get_live_snapshot(state: State<AppState>) -> Value {
 
 #[tauri::command]
 pub(crate) fn record_lab_frontend(name: String, detail: Value) {
+    if name == "relic_picker_paint_opportunity" {
+        if let Some(rendered_count) = detail["rendered_cards"].as_u64() {
+            if let Err(error) = crate::candidate::pipeline::observe_paint(rendered_count) {
+                record("candidate_result_write_failed", json!({"error": error}));
+            }
+        }
+    }
     record(&format!("frontend:{name}"), detail);
 }
 
